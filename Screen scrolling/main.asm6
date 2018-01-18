@@ -1,0 +1,367 @@
+;===[ 80 Characters ]===========================================================
+
+;===[01][ Constants ]===========================================================
+PPU_CTRL                   = $2000
+VBLANK_NMI                 = %10000000
+PPU_MASK                   = $2001
+PPU_STATUS                 = $2002
+OAM_ADDR                   = $2003
+OAM_DATA                   = $2004
+PPU_SCROLL                 = $2005
+PPU_ADDR                   = $2006
+PPU_DATA                   = $2007
+OAM_DMA                    = $4014
+JOY_STROBE                 = $4016
+;===[02][ Variables ]===========================================================
+
+GLOBAL_LowByte             = $0000
+GLOBAL_HighByte            = $0001
+GLOBAL_BgXPosition         = $0002
+GLOBAL_BgYPosition         = $0003
+GLOBAL_NMIIndex            = $0004
+GLOBAL_JoypadKeys_Current  = $0005
+GLOBAL_JoypadKeys_Previous = $0006
+
+.enum $0007
+;GLOBAL_DecompressionBgBuffer .dsb 32
+GLOBAL_BufferX .dsb 1
+GLOBAL_BufferY .dsb 1
+.ende
+
+GLOBAL_Joypad1             = $4016
+GLOBAL_Joypad2             = $4017
+GLOBAL_JoypadKey_None      = %00000000
+GLOBAL_JoypadKey_A         = %10000000
+GLOBAL_JoypadKey_B         = %01000000
+GLOBAL_JoypadKey_Select    = %00100000
+GLOBAL_JoypadKey_Start     = %00010000
+GLOBAL_JoypadKey_Up        = %00001000
+GLOBAL_JoypadKey_Down      = %00000100
+GLOBAL_JoypadKey_Left      = %00000010
+GLOBAL_JoypadKey_Right     = %00000001
+
+;===[03][ iNES v2.0 ]===========================================================
+
+;
+; iNES header: 
+; - 32KB PRG;
+; - 8KB CHR;
+; - NROM-256;
+; - Vertical Mirroring
+  .db $4E,$45,$53,$1A,$02,$01,$01,$00
+  .db $00,$00,$00,$00,$00,$00,$00,$00
+; 
+; iNES should be 16 bytes in length
+
+;===[03][  PRG-ROM  ]===========================================================
+
+;
+; PRG-ROM starts from $8000
+  .base $8000
+;===[03][  PRG-ROM  ]==========================================(01)( RESET )====
+
+;
+; NES requires ~30,000 CPU cycles for a warm-up. Let's initialize the memory 
+; and not use PPU during this time.
+RESET:
+	;
+	; SEI ignores IRQ interrupts
+	SEI
+	;
+	; CLD - we are disabling decimal mode
+	CLD
+	LDX #$40
+	;
+	; Disabling IRQ APU by storing 40 (in hex) to $4017
+	STX $4017
+	LDX #$FF
+	; 
+	; Stack should be decimal 255
+	TXS
+	INX
+	;
+	; Disable NMI
+	STX PPU_CTRL
+	;
+	; Disable rendering
+	STX PPU_MASK
+	;
+	; Disable DMC IRQ
+	STX $4010
+	;
+	; Optional: mapper JMP code goes here, doesn't required ATM.
+	
+	; 
+	; There is a chance that it was a soft reset and it was done during vBlank
+	; So we are clearing all flags of the console here just in case.
+	BIT PPU_STATUS
+;
+; @RESET_vBlankwait1 - first of 2 cycles required for a warm-up:
+; takes:
+; [nothing]
+; returns:
+; [nothing]
+@RESET_vBlankwait1
+	BIT PPU_STATUS
+	BPL @RESET_vBlankwait1
+	TXA
+;
+; @RESET_ClearMemory - clears memory:
+; takes:
+; X (is 0 now)
+; returns:
+; [nothing]
+@RESET_ClearMemory:
+    STA $000,X
+    STA $100,X
+    STA $300,X
+    STA $400,X
+    STA $500,X
+    STA $600,X
+	;
+	; STA $700,x is optional, you may keep memory there (for a soft-reset use)
+    STA $700,X
+	;
+	; $200,X is used for OAM, so we are not clearing it (this will cause 
+	; different glitches).
+    INX
+    BNE @RESET_ClearMemory
+    ; 
+	; Initialization for mappers or sounds goes here 
+
+;
+; @RESET_vBlankwait1 - second of 2 cycles required for a warm-up:
+; takes:
+; [nothing]
+; returns:
+; [nothing]	
+	@RESET_vBlankwait2:
+    BIT PPU_STATUS
+    BPL @RESET_vBlankwait2
+	
+;===[03][  PRG-ROM  ]========================================(02)( BGLOAD )====
+
+;
+; Initialization of nametables and attributes goes here.
+LDA PPU_STATUS
+;
+; By storing 2 values in the PPU_ADDR, we will store the address there.
+LDA #$20
+STA PPU_ADDR
+LDA #$00
+STA PPU_ADDR
+LDX #<BG1_NAMETABLE
+STX GLOBAL_LowByte
+LDY #>BG1_NAMETABLE
+STY GLOBAL_HighByte
+LDX #$00
+LDY #$00
+;
+; BGLOAD_NametableBg1Loop - loads the background to the PPU
+; takes:
+; X (is 0 now)
+; Y (is 0 now)
+; returns:
+; [nothing]
+@BGLOAD_NametableBg1Loop:
+	LDA ($00), Y
+	STA PPU_DATA
+	INY
+	CPY #$00
+	BNE @BGLOAD_NametableBg1Loop
+	INC GLOBAL_HighByte
+	INX
+	CPX #$04
+	BNE @BGLOAD_NametableBg1Loop
+LDA PPU_STATUS
+LDA #$24
+STA PPU_ADDR
+LDA #$00
+STA PPU_ADDR
+LDA #<BG2_NAMETABLE
+STA GLOBAL_LowByte
+LDA #>BG2_NAMETABLE
+STA GLOBAL_HighByte
+LDX #$00
+LDY #$00
+@BGLOAD_NametableBg2Loop:
+	LDA ($00), Y
+	STA PPU_DATA
+	INY
+	CPY #$00
+	BNE @BGLOAD_NametableBg2Loop
+	INC GLOBAL_HighByte
+	INX
+	CPX #$04
+	BNE @BGLOAD_NametableBg2Loop
+;
+; Pallete initialization
+LDA PPU_STATUS
+;
+; We require $3F00 for a pallete
+LDA #$3F
+STA PPU_ADDR
+LDA #$00
+STA PPU_ADDR
+LDX #$00
+;
+; BGLOAD_PalleteBg1Loop - loads the pallete to the PPU
+; takes:
+; X (is 0 now)
+; returns:
+; [nothing]
+@BGLOAD_PalleteBg1Loop:
+   LDA BG_PALLETE, X
+   STA PPU_DATA
+   INX
+   CPX #$10
+   BNE @BGLOAD_PalleteBg1Loop
+;
+; Resetting scroll position
+LDA #$00
+STA PPU_SCROLL
+LDA #$00
+STA PPU_SCROLL
+;
+; Enabling NMI and rendering
+LDA #VBLANK_NMI
+STA PPU_CTRL
+LDA #%00001010
+STA PPU_MASK
+
+;===[03][  PRG-ROM  ]====================================(03)( GAME LOGIC )====
+
+;
+; GAME_EndlessLoop - works infinitely, it is our main logic
+; takes:
+; [nothing]
+; returns:
+; [nothing]
+@GAME_EndlessLoop:
+	;
+	; Reading JoyPad1
+	JSR @GAME_ReadJoypad1
+	;
+	; Waiting for a vBlank
+	JSR @GAME_vBlankWait
+	;
+	; Loading JoyPad1 data to detect scrolling
+	LDA GLOBAL_JoypadKeys_Current
+	AND #GLOBAL_JoypadKey_Right
+	BEQ @RightNotPressed
+	;
+	; GLOBAL_BgXPosition++ if "right" is pressed on a JoyPad1
+	INC GLOBAL_BgXPosition
+	@RightNotPressed:
+	LDA GLOBAL_JoypadKeys_Current
+	AND #GLOBAL_JoypadKey_Left
+	BEQ @LeftNotPressed
+	;
+	; GLOBAL_BgXPosition-- if "left" is pressed on a JoyPad1
+	DEC GLOBAL_BgXPosition
+	@LeftNotPressed:
+	; 
+	; Saving the scroll position of X to PPU_SCROLL
+	LDA GLOBAL_BgXPosition
+	STA PPU_SCROLL
+	LDA GLOBAL_JoypadKeys_Current
+	AND #GLOBAL_JoypadKey_Down
+	BEQ @DownNotPressed
+	;
+	; GLOBAL_BgYPosition++ if "down" is pressed on a JoyPad1
+	INC GLOBAL_BgYPosition
+	;
+	; Y for scrolling cannot be more than $EF - or it will cause artifacts
+	LDA #$EF
+	CMP GLOBAL_BgYPosition
+	BNE @DownNotPressed
+	LDA #$00
+	STA GLOBAL_BgYPosition
+	@DownNotPressed:
+	LDA GLOBAL_JoypadKeys_Current
+	AND #GLOBAL_JoypadKey_Up
+	BEQ @UpNotPressed
+	; 
+	; GLOBAL_BgYPosition-- if "up" is pressed on a JoyPad1
+	DEC GLOBAL_BgYPosition
+	;
+	; Again, Y for scrolling cannot be more than $EF
+	LDA #$FF
+	CMP GLOBAL_BgYPosition
+	BNE @UpNotPressed
+	LDA #$EF
+	STA GLOBAL_BgYPosition
+	@UpNotPressed:
+	LDA GLOBAL_BgYPosition
+	; 
+	; Saving the scroll position of Y to PPU_SCROLL
+	STA PPU_SCROLL
+	LDA GLOBAL_NMIIndex
+	JMP @GAME_EndlessLoop
+
+;
+; GAME_vBlankWait - designed to burn CPU cycles for a vBlank trigger (if game
+; logic finished the task faster than the frame rendering begins)
+; takes:
+; GLOBAL_NMIIndex
+; returns:
+; [nothing]
+@GAME_vBlankWait:
+	LDA GLOBAL_NMIIndex
+	@vBlankWait_NotYet:
+		; 
+		; NMI routing will increase GLOBAL_NMIIndex eventually
+		CMP GLOBAL_NMIIndex
+		BEQ @vBlankWait_NotYet
+
+	RTS
+
+;
+; GAME_ReadJoypad1 - reads JoyPad1 inputs
+; takes:
+; [nothing]
+; returns:
+; GLOBAL_JoypadKeys_Current - curently pressed keys
+@GAME_ReadJoypad1:
+	LDA #$01
+	STA GLOBAL_Joypad1
+	STA GLOBAL_JoypadKeys_Current
+	LSR A
+	STA GLOBAL_Joypad1
+	-:
+		LDA GLOBAL_Joypad1
+		LSR A
+		ROL GLOBAL_JoypadKeys_Current
+		BCC -
+	RTS	
+;===[03][  PRG-ROM  ]===========================================(04)( NMI )====
+
+NMI:
+	;
+	; GLOBAL_NMIIndex++ each time the frame is renderred
+	INC GLOBAL_NMIIndex
+	RTI
+IRQ:
+	RTI
+
+BG1_NAMETABLE:
+  .incbin "bg1.nam"
+;
+; Nametable содержимое второго бекграунда
+BG2_NAMETABLE:
+  .incbin "bg2.nam"
+
+BG_PALLETE:
+  .incbin "bg.pal"
+  ; 
+  ; .pad $FFFA,$FF will fill in the rest of the rom with $FF values
+  .pad $FFFA,$FF
+  .org $FFFA
+  .dw NMI
+  .dw RESET
+  .dw IRQ
+;===[04][  CHR-ROM  ]===========================================================
+
+  .base $0000
+  .incbin "bg.chr"
+  .pad $2000,$FF
